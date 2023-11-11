@@ -1,0 +1,396 @@
+---
+title: "PEC 1: Clasificación de familias de genes a partir de secuencias de ADN"
+author: "Claudia Tielas"
+date: '2023-10-12'
+output:
+  html_document:
+    toc: true          
+    toc_float: 
+      collapsed: false        
+      smooth_scroll: true
+---
+
+```{r setup, include=FALSE, warning=FALSE, cache=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(class)
+library(gmodels)
+library(stringr)
+library(kableExtra)
+library(ggplot2)
+library(pROC)
+library(caret)
+library(gridExtra)
+```
+
+## Algoritmo k-NN
+
+El algoritmo k-Nearest Neighbors (k-NN) es un método de aprendizaje supervisado. El aprendizaje automáticose basa en un proceso de entrenamiento que implica presentar al algoritmo ejemplos etiquetados para que pueda aprender a reconocer patrones y similitudes entre los datos. Una vez que el algoritmo ha sido entrenado, se utiliza para predecir la etiqueta de nuevos datos que no tienen etiquetas previas, basándose en la similitud con los datos de entrenamiento. En concreto, el algoritmo k-NN funciona de la siguiente manera:
+
+1.  Recibe un conjunto de datos etiquetados.
+2.  Calcula la similitud entre un nuevo objeto y los objetos de entrenamiento.
+3.  Selecciona los "k" objetos más cercanos.
+4.  En clasificación, realiza una votación mayoritaria para asignar una etiqueta al nuevo objeto. En regresión, promedia los valores objetivo.
+
+Características:
+
+-   Es simple y fácil de entender.
+-   No requiere entrenamiento previo.
+-   Sensible a la elección de la métrica de distancia y el valor de "k".
+-   Puede ser sensible al ruido en los datos.
+-   Proporciona una interpretación intuitiva de las predicciones basadas en la proximidad.
+
+A diferencia de muchos algoritmos de clasificación, k-NN no realiza ningún aprendizaje. Simplemente almacena los datos de entrenamiento palabra por palabra. Luego, los ejemplos de prueba sin etiquetar se comparan con los registros más similares en el conjunto de entrenamiento utilizando una función de distancia, y La instancia de prueba se clasifica tomando un 'voto' entre los k Vecinos más Cercanos; específicamente,esto implica asignar la clase de la mayoría de los k vecinos. En caso de empate, se rompe al azar.
+
+Antes de comenzar a preparar los datos, mostraremos una breve comparación entre fortalezas y debilidades que ofrece el algorirmo k-NN y que debemos tener en cuenta:
+
+```{r, echo = FALSE}
+# Tabla de fortalezas y debilidades del algoritmo k-NN
+fortalezas <- c(
+  "Fácil de entender e implementar",
+  "\nNo requiere suposiciones sobre la distribución de los datos",
+  "\nVersátil y adecuado para clasificación y regresión",
+  "\nFunciona bien con datos numéricos y categóricos",
+  "\nPuede adaptarse a cambios en la distribución de datos",
+  "\nFase de entrenamiento rápida"
+)
+
+debilidades <- c(
+  "Sensible a valores atípicos y ruido en los datos",
+  "\nNecesita determinar un valor apropiado de k",
+  "\nEs computacionalmente costoso en grandes conjuntos de datos",
+  "\nVariables nominales y valores perdidos requieren procesamiento adicional",
+  "\nLa elección incorrecta de k puede afectar la precisión",
+  "\nFase de clasificación lenta"
+)
+
+# Crear la tabla
+tabla_fortalezas_debilidades <- data.frame(Algoritmo = c("Fortalezas","Debilidades"),
+                                          k_NN = c(paste(fortalezas, collapse = "\n"),
+                                                      paste(debilidades, collapse = "\n")))
+
+# Imprimir la tabla
+kable(tabla_fortalezas_debilidades, format = "html", escape = FALSE) %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+
+```
+
+### Función para contar hexámeros
+
+```{r, echo=FALSE, include=FALSE}
+# Leemos los datos desde el archivo
+human_data <- read.table("human_data.txt", header = TRUE, stringsAsFactors = FALSE)
+```
+
+Generaremos la función count_hexamers_in_sequence, que utilizaremos para contar la frecuencia de aparición de todos los hexámeros en una secuencia de ADN dada.
+
+```{r}
+# Argumentos:
+# - sequence: La secuencia de ADN de la cual se contarán los hexámeros.
+# - all_hexamers: Un vector que contiene todos los hexámeros posibles a considerar.
+
+# Devuelve:
+# - hexamer_counts: Un vector que almacena el conteo de cada hexámero en la secuencia.
+
+count_hexamers_in_sequence <- function(sequence, all_hexamers) {
+  hexamer_counts <- integer(length(all_hexamers))  # Inicializamos un vector de conteo con ceros
+
+  for (j in 1:(nchar(sequence) - 5)) {
+    hexamer <- substr(sequence, j, j + 5)  # Extraemos un hexámero de la secuencia
+    if (hexamer %in% all_hexamers) {
+      index <- match(hexamer, all_hexamers)  # Encontramos el índice del hexámero en all_hexamers
+      hexamer_counts[index] <- hexamer_counts[index] + 1  # Incrementamos el conteo
+    }
+  }
+
+  return(hexamer_counts)  # Devolvemos el vector de conteo de hexámeros
+}
+```
+
+Si trabajamos con datos genómicos y deseamos conocer cuántas veces aparece cada posible secuencia de 6 nucleótidos (A, C, G, T) en una región específica del ADN, podemos utilizar esta función para realizar el conteo. Luego, podemos emplear los resultados para comprender mejor la composición de la secuencia, identificar secuencias repetitivas o patrones de interés, o comparar diferentes secuencias genéticas entre sí.
+
+### Clasificador k-nn
+
+a.  Leer los datos del fichero human_data.txt.
+
+```{r}
+# Leemos los datos del fichero human_data.txt
+human_data <- read.table("human_data.txt", header = TRUE)
+```
+
+b.  Representar mediante un histograma la distribución de las frecuencias de longitudes de las secuencias.
+
+```{r}
+# Calculamos la longitud de cada secuencia
+sequence_lengths <- sapply(human_data$sequence, function(seq) nchar(seq))
+
+# Creamos el histograma
+histogram <- ggplot(data = data.frame(sequence_lengths), aes(x = sequence_lengths)) +
+  geom_histogram(binwidth = 100) +
+  labs(title = "                 Distribución de Longitudes en las Secuencias de Genes",
+       x = "Longitud de Secuencia",
+       y = "Frecuencia") +
+  theme_minimal()
+
+# Mostramos el histograma
+print(histogram)
+```
+
+c.  Transformar las secuencias de los genes en vectores numéricos usando la función de conteo de hexámeros desarrollada anteriormente. Obtener la matriz de conteos de hexámeros.
+
+```{r}
+# Generamos una lista de todos los hexámeros posibles
+all_hexamers <- c()                   # Creamos un vector vacío para almacenar los hexámeros
+nucleotidos <- c("A", "C", "G", "T")   # Definimos los cuatro nucleótidos
+
+# Generamos loop's anidados para los 6 nucleótidos
+for (a in nucleotidos) {               
+  for (b in nucleotidos) {             
+    for (c in nucleotidos) {          
+      for (d in nucleotidos) {         
+        for (e in nucleotidos) {       
+          for (f in nucleotidos) {    
+            hexamer <- paste(a, b, c, d, e, f, sep = "")  # Combinamos los seis nucleótidos en un hexámero
+            all_hexamers <- c(all_hexamers, hexamer)    # Agregamos el hexámero a la lista total de hexámeros
+          }
+        }
+      }
+    }
+  }
+}
+
+# Comprobamos que se ha generado bien la lista de hexámeros mostrando los primeros casos y el tamaño de la lista:
+head(all_hexamers)
+length(all_hexamers)
+```
+
+```{r}
+# Creamos una matriz vacía para almacenar los conteos de hexámeros
+num_sequences <- nrow(human_data)
+hexamer_matrix <- matrix(0, nrow = num_sequences, ncol = length(all_hexamers))
+colnames(hexamer_matrix) <- all_hexamers
+
+# Iteramos sobre las secuencias de genes en human_data y contamos hexámeros para cada una
+for (i in 1:num_sequences) {
+  sequence <- human_data$sequence[i]
+
+  if (nchar(sequence) >= 6) {
+    hexamer_counts <- count_hexamers_in_sequence(sequence, all_hexamers)
+    hexamer_matrix[i, ] <- hexamer_counts
+  }
+}
+```
+
+```{r}
+# Pequeña muestra de la matriz generada
+head(hexamer_matrix[1:5,1:10])
+```
+
+d.  Realizar la implementación del algoritmo knn, con los siguientes pasos:
+
+-  Utilizando la semilla aleatoria 123, separar los datos en dos partes, una parte para training (75%) y una parte para test (25%).
+
+```{r}
+# Dividimos los datos en conjunto de entrenamiento y prueba
+set.seed(123)  # Para reproducibilidad
+sample_indices <- sample(1:nrow(human_data), size = 0.75 * nrow(human_data))
+train_data <- human_data[sample_indices, ]
+test_data <- human_data[-sample_indices, ]
+```
+
+- Aplicar el k-nn (k = 1, 3, 5, 7) basado en el training para predecir la familia de las secuencias del test.
+
+```{r}
+# Inicializamos variables para realizar un seguimiento de la mejor precisión y el valor de k correspondiente
+mejor_precision <- 0
+mejor_k <- 0
+
+# Función para clasificación k-nn
+knn_classifier <- function(train_matrix, test_matrix, train_labels, k) { 
+  predictions <- knn(train_matrix, test_matrix, train_labels, k = k) 
+  return(predictions)
+}
+
+# Obtenemos las etiquetas de clase del conjunto de entrenamiento
+train_labels <- train_data$class
+
+# Aplicamos el clasificador k-nn con diferentes valores de k
+k_values <- c(1, 3, 5, 7)  # Valores de k a probar
+for (k in k_values) {
+  predictions <- knn_classifier(hexamer_matrix[sample_indices, ], hexamer_matrix[-sample_indices, ], train_labels, k)
+  
+  # Evaluamos el rendimiento del clasificador
+  accuracy <- sum(predictions == test_data$class) / length(test_data$class)
+  cat(paste("Precisión para k =", k, ":", round(accuracy,3), "\n"))
+  
+  # Guardamos el valor de k con mejor valor de accuracy
+  if (accuracy > mejor_precision) {
+    mejor_precision <- accuracy * 100
+    mejor_k <- k
+}}
+```
+
+- Comentar los resultados.
+
+El valor de k influirá en el rendimiento del algoritmo k-nn: un valor más bajo de k tiende a generar un modelo más ajustado a los datos, lo que puede aumentar la precisión, pero también puede hacer que el modelo sea más sensible al ruido en los datos. Un valor más alto de k suaviza el modelo y puede reducir la precisión.
+
+```{r, echo=FALSE}
+cat("En este caso, k =",mejor_k,"mostró la mayor precisión en el conjunto de prueba, \ncon un",mejor_precision, "% de accuracy")
+```
+
+Es importante recordar que la precisión del modelo k-nn es fundamental en este contexto, ya que predecir la familia de genes correctamente es crucial para comprender sus funciones y relaciones en el genoma. Por lo tanto, la elección de un valor de k que optimice la precisión es de gran relevancia.
+
+### Curva ROC
+
+e. Para las secuencias de las familias: 0 (=G protein coupled receptors) y 1( =Tyrosine kinase) i. Representar la curva ROC para cada valor de k = 1, 3, 5, 7.
+
+```{r}
+# Filtramos el dataset para abarcar solo las clases 0 y 1
+subset_data <- human_data[human_data$class %in% c(0, 1), ]
+```
+
+```{r}
+# Creamos la matriz de conteo de hexámeros para el subconjunto
+subset_hexamer_matrix <- matrix(0, nrow = nrow(subset_data), ncol = length(all_hexamers))
+colnames(subset_hexamer_matrix) <- all_hexamers
+
+# Iteramos sobre las secuencias de ADN en el subconjunto
+for (i in 1:nrow(subset_data)) {
+  sequence <- subset_data$sequence[i]
+
+  for (j in 1:(nchar(sequence) - 5)) {
+    hexamer <- substr(sequence, j, j + 5)
+    if (hexamer %in% all_hexamers) {
+      subset_hexamer_matrix[i, hexamer] <- subset_hexamer_matrix[i, hexamer] + 1
+    }
+  }
+}
+```
+
+```{r}
+# Dividiremos los datos en conjunto de entrenamiento (75 %) y prueba (25 % restante)
+set.seed(123)
+sample_indices <- sample(1:nrow(subset_data), size = 0.75 * nrow(subset_data))
+train_data <- subset_data[sample_indices, ]
+test_data <- subset_data[-sample_indices, ]
+
+# Definimos los valores de k que someteremos a evaluación:
+k_values <- c(1, 3, 5, 7)
+
+# Creamos listas para almacenar las curvas ROC y los estadísticos
+roc_curves <- list()
+auc_values <- numeric(length(k_values))
+false_positives_values <- numeric(length(k_values))
+false_negatives_values <- numeric(length(k_values))
+classification_error_values <- numeric(length(k_values))
+
+# Iteramos sobre los valores de k
+for (i in seq_along(k_values)) {
+  k <- k_values[i]
+
+  # Aplicamos k-nn
+  test_pred <- knn(train = subset_hexamer_matrix[sample_indices, ], 
+                   test = subset_hexamer_matrix[-sample_indices, ], 
+                   cl = train_data$class, k = k)
+
+  # Generamos etiquetas verdaderas para las clases 0 y 1
+  true_labels <- ifelse(test_data$class == 0, 1, 0)
+  
+  # Creamos el objeto ROC
+  roc_curves[[as.character(k)]] <- roc(true_labels, as.numeric(as.character(test_pred)))
+  
+  # Creamos la matriz de confusión
+  confusion_matrix <- table(Actual = true_labels, Predicted = test_pred)
+  
+  # Obtenemos el número de falsos positivos y falsos negativos
+  false_positives <- confusion_matrix[2, 1]
+  false_negatives <- confusion_matrix[1, 2]
+  
+  # Calculamos el error de clasificación
+  total <- sum(confusion_matrix)
+  classification_error <- (false_positives + false_negatives) / total
+  
+  # Almacenamos los valores
+  auc_values[i] <- auc(roc_curves[[as.character(k)]])
+  false_positives_values[i] <- false_positives
+  false_negatives_values[i] <- false_negatives
+  classification_error_values[i] <- classification_error
+}
+```
+
+```{r, echo=FALSE}
+# Mostramos los resultados para cada valor de k
+for (i in seq_along(k_values)) {
+  k <- k_values[i]
+  cat(paste("K =", k, "\n"))
+  cat("AUC =", auc_values[i], "\n")
+  cat("Falsos Positivos =", false_positives_values[i], "\n")
+  cat("Falsos Negativos =", false_negatives_values[i], "\n")
+  cat("Error de Clasificación =", classification_error_values[i], "\n\n")
+}
+```
+
+```{r}
+# Dibujamos las curvas ROC
+colors <- c("blue", "red", "green", "purple")
+plot(roc_curves[[as.character(k_values[1])]], col = colors[1], main = "Curvas ROC para diferentes valores de k", print.auc = FALSE)
+
+for (i in 2:length(k_values)) {
+  plot(roc_curves[[as.character(k_values[i])]], add = TRUE, col = colors[i], print.auc = FALSE)
+}
+
+# Agregamos etiquetas de AUC separadas
+for (i in 1:length(k_values)) {
+  text(0.5, 0.4 - 0.1 * i, labels = paste("AUC =", round(auc_values[i], 4)), pos = 3, col = colors[i])
+}
+
+# Agregamos leyendas para k
+legend("bottomright", legend = paste("k =", k_values), col = colors, lty = 1, cex = 0.8)
+```
+
+```{r, echo=FALSE}
+# Creamos un dataframe con los resultados
+results_df <- data.frame(
+  k = k_values,
+  AUC = auc_values,
+  FPR = false_positives_values,
+  FNR = false_negatives_values,
+  Error = classification_error_values
+)
+
+# Gráfico de barras para AUC
+plot_auc <- ggplot(results_df, aes(x = factor(k), y = AUC, fill = factor(k))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "K", y = "AUC") +
+  theme_minimal() +
+  guides(fill = FALSE)
+
+# Gráfico de barras para Falsos Positivos
+plot_fpr <- ggplot(results_df, aes(x = factor(k), y = FPR, fill = factor(k))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "K", y = "Falsos Positivos") +
+  theme_minimal() +
+  guides(fill = FALSE)
+
+# Gráfico de barras para Falsos Negativos
+plot_fnr <- ggplot(results_df, aes(x = factor(k), y = FNR, fill = factor(k))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "K", y = "Falsos Negativos") +
+  theme_minimal() +
+  guides(fill = FALSE)
+
+# Gráfico de barras para el Error de Clasificación
+plot_error <- ggplot(results_df, aes(x = factor(k), y = Error, fill = factor(k))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "K", y = "Error de Clasificación") +
+  theme_minimal() +
+  guides(fill = FALSE)
+
+# Mostramos los gráficos
+grid.arrange(plot_auc, plot_fpr, plot_fnr, plot_error, ncol = 2)
+```
+
+- Comentar los resultados de la clasificación en función de la curva ROC y del número de falsos positivos, falsos negativos y error de clasificación obtenidos para los diferentes valores de k.
+
+En general, el valor de K = 1 muestra el mejor rendimiento en términos de AUC, lo que sugiere que este modelo tiene la mejor capacidad de distinguir entre las clases. Sin embargo, también tiene un alto error de clasificación. A medida que aumenta el valor de K, el AUC disminuye y el error de clasificación tiende a disminuir, pero el equilibrio entre falsos positivos y falsos negativos cambia.
+
+Si nuestra investigación se centra en la aplicación práctica de la clasificación de genes y nos preocupa minimizar los errores en la asignación de genes a sus familias, es posible que optemos por un valor de k que ofrezca el menor error de clasificación. Esto aseguraría una mayor precisión en la clasificación de genes en el estudio.
