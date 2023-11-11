@@ -1,6 +1,6 @@
 ---
-title: "PEC 1: Clasificación de familias de genes a partir de secuencias de ADN"
-author: "Claudia Tielas"
+title: "Clasificación de familias de genes a partir de secuencias de ADN"
+author: "Claudia T."
 date: '2023-10-12'
 output:
   html_document:
